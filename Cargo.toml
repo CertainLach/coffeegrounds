@@ -1,2 +1,2 @@
 [workspace]
-members = ["crates/coffeegrounds-core"]
+members = ["crates/coffeegrounds-core", "cmds/coffgp"]

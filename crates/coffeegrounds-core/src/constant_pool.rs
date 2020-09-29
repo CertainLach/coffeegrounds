@@ -1,5 +1,5 @@
 use std::{
-	fmt::{self, Display},
+	fmt::{self, Display, Formatter},
 	io::Write,
 	ops::Index,
 };
@@ -183,11 +183,21 @@ pub enum Item<'input> {
 	Nop,
 }
 
-macro_rules! cp_deb_str {
-	($list: ident, $idx: ident) => {
-		$list.get_str(*$idx as usize).unwrap_or(&"!".into())
-	};
+pub trait PrintWithCp {
+	fn print(&self, cp: &List<'_>, f: &mut fmt::Formatter<'_>) -> fmt::Result;
 }
+impl<T> PrintWithCp for Option<T>
+where
+	T: PrintWithCp,
+{
+	fn print(&self, cp: &List<'_>, f: &mut Formatter<'_>) -> fmt::Result {
+		match self {
+			Some(v) => v.print(cp, f),
+			None => write!(f, "!"),
+		}
+	}
+}
+
 impl<'i> Item<'i> {
 	fn tag(&self) -> Tag {
 		use Tag::*;
@@ -218,25 +228,69 @@ impl<'i> Item<'i> {
 	pub fn occupies_two_slots(&self) -> bool {
 		self.tag().occupies_two_slots()
 	}
-	pub fn debug(&self, list: &List<'i>, out: &mut std::fmt::Formatter<'_>) -> fmt::Result {
+}
+impl PrintWithCp for &Item<'_> {
+	fn print(&self, list: &List, f: &mut std::fmt::Formatter<'_>) -> fmt::Result {
 		match self {
+			Item::Class { name_index } => {
+				list.get(*name_index as usize).print(list, f)?;
+			}
+			Item::Fieldref {
+				class_index,
+				name_and_type_index,
+			} => {
+				list.get(*name_and_type_index as usize).print(list, f)?;
+				write!(f, " in ")?;
+				list.get(*class_index as usize).print(list, f)?;
+			}
+			Item::Methodref {
+				class_index,
+				name_and_type_index,
+			} => {
+				list.get(*name_and_type_index as usize).print(list, f)?;
+				write!(f, " in ")?;
+				list.get(*class_index as usize).print(list, f)?;
+			}
+			Item::InterfaceMethodref {
+				class_index,
+				name_and_type_index,
+			} => {
+				list.get(*name_and_type_index as usize).print(list, f)?;
+				write!(f, " in ")?;
+				list.get(*class_index as usize).print(list, f)?;
+			}
+			Item::String { string_index } => {
+				list.get(*string_index as usize).print(list, f)?;
+			}
 			Item::NameAndType {
 				name_index,
 				descriptor_index,
-			} => write!(
-				out,
-				" // {} of type {}",
-				cp_deb_str!(list, descriptor_index),
-				cp_deb_str!(list, name_index)
-			)?,
-			Item::Class { name_index } => write!(out, " // {}", cp_deb_str!(list, name_index))?,
-			Item::String { string_index } => {
-				write!(out, " // {}", cp_deb_str!(list, string_index))?
+			} => {
+				list.get(*name_index as usize).print(list, f)?;
+				write!(f, " of type ")?;
+				list.get(*descriptor_index as usize).print(list, f)?;
+			}
+			Item::MethodHandle {
+				reference_index, ..
+			} => {
+				list.get(*reference_index as usize).print(list, f)?;
 			}
 			Item::MethodType { descriptor_index } => {
-				write!(out, " // {}", cp_deb_str!(list, descriptor_index))?
+				list.get(*descriptor_index as usize).print(list, f)?;
 			}
-			// TODO: more debugging
+			Item::InvokeDynamic {
+				name_and_type_index,
+				..
+			} => {
+				list.get(*name_and_type_index as usize).print(list, f)?;
+			}
+			Item::Module { name_index } => {
+				list.get(*name_index as usize).print(list, f)?;
+			}
+			Item::Package { name_index } => {
+				list.get(*name_index as usize).print(list, f)?;
+			}
+			Item::Utf8(v) => write!(f, "{}", v)?,
 			_ => {}
 		}
 		Ok(())
@@ -442,7 +496,7 @@ impl Display for Item<'_> {
 				name_index,
 				descriptor_index,
 			} => write!(f, "nameandtype #{} #{}", descriptor_index, name_index),
-			Item::Utf8(v) => write!(f, "utf8 {}", v),
+			Item::Utf8(..) => write!(f, "utf8"),
 			Item::MethodHandle {
 				reference_kind,
 				reference_index,
@@ -506,6 +560,10 @@ impl<'i> List<'i> {
 			None
 		}
 	}
+
+	pub fn get(&self, index: usize) -> Option<&Item<'i>> {
+		self.0.get(index)
+	}
 }
 impl<'i> Index<usize> for List<'i> {
 	type Output = Item<'i>;
@@ -560,9 +618,9 @@ impl<'i> ClassParse<'i> for List<'i> {
 impl Display for List<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		for (idx, item) in self.0.iter().enumerate() {
-			write!(f, "{}. {}", idx, item)?;
+			write!(f, "{}. {} ", idx, item)?;
 			// Let item explain yourself
-			item.debug(self, f)?;
+			item.print(self, f)?;
 			writeln!(f)?;
 		}
 		Ok(())
