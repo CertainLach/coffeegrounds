@@ -1,97 +1,31 @@
 use std::fmt::Display;
 
-use byteorder::{BigEndian, WriteBytesExt};
-use enumflags2::BitFlags;
 use nom::{
 	error::ErrorKind,
 	number::streaming::{be_u16, be_u32},
 };
 
-use crate::{constant_pool::PrintWithCp, ClassParse, SerResult};
-
 use super::{constant_pool::List, version::Version};
-
-#[repr(u16)]
-#[derive(Clone, Copy, BitFlags, Debug)]
-pub enum ValidAccessFlags {
-	Public = 0x0001,
-	Final = 0x0010,
-	Super = 0x0020,
-	Interface = 0x0200,
-	Abstract = 0x0400,
-	Synthetic = 0x1000,
-	Annotation = 0x2000,
-	Enum = 0x4000,
-}
-
-impl Display for ValidAccessFlags {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		use ValidAccessFlags::*;
-		write!(
-			f,
-			"{}",
-			match self {
-				Public => "public",
-				Final => "final",
-				Super => "super",
-				Interface => "interface",
-				Abstract => "abstract",
-				Synthetic => "synthetic",
-				Annotation => "annotation",
-				Enum => "enum",
-			}
-		)
-	}
-}
-
-#[derive(Debug)]
-pub struct AccessFlags {
-	valid: BitFlags<ValidAccessFlags>,
-	invalid: u16,
-}
-impl ClassParse<'_> for AccessFlags {
-	fn parse(input: &[u8], _ver: Version) -> nom::IResult<&[u8], Self> {
-		let (input, access_flags) = be_u16(input)?;
-		let flags = match BitFlags::from_bits(access_flags) {
-			Ok(valid) => AccessFlags { valid, invalid: 0 },
-			Err(e) => AccessFlags {
-				valid: e.truncate(),
-				invalid: e.invalid_bits(),
-			},
-		};
-		Ok((input, flags))
-	}
-
-	fn serialize(&self, output: &mut Vec<u8>, _ver: Version) -> SerResult {
-		let flags = BitFlags::bits(self.valid) | self.invalid;
-		output.write_u16::<BigEndian>(flags)?;
-		Ok(())
-	}
-}
-
-impl Display for AccessFlags {
-	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		for flag in self.valid.iter() {
-			write!(f, "{} + ", flag)?;
-		}
-		write!(f, "{}", self.invalid)?;
-		Ok(())
-	}
-}
+use crate::{
+	access::AccessFlags, access::ClassAccessFlags, attribute, constant_pool::PrintWithCp,
+	field::Field, method::Method, ClassParse, SerResult,
+};
 
 #[derive(Debug)]
 pub struct ClassFile<'i> {
 	version: Version,
 
 	constant_pool: List<'i>,
-	access_flags: AccessFlags,
+	access_flags: AccessFlags<ClassAccessFlags>,
 
 	this_class: u16,
 	super_class: u16,
-	// interfaces: Vec<Interface>,
-	// fields: Vec<Field>,
-	// methods: Vec<Method>,
-	// attributes: Vec<Attribute>
+
+	interfaces: Vec<u16>,
+
+	fields: Vec<Field<'i>>,
+	methods: Vec<Method<'i>>,
+	attributes: attribute::List<'i>,
 }
 impl<'i> ClassFile<'i> {
 	pub fn parse(input: &'i [u8]) -> nom::IResult<&'i [u8], Self> {
@@ -106,6 +40,35 @@ impl<'i> ClassFile<'i> {
 		let (input, this_class) = be_u16(input)?;
 		let (input, super_class) = be_u16(input)?;
 
+		let (input, interface_count) = be_u16(input)?;
+		let mut interfaces = Vec::with_capacity(interface_count as usize);
+		let mut input = input;
+		for _ in 0..interface_count {
+			let (new_input, iface) = be_u16(input)?;
+			input = new_input;
+			interfaces.push(iface);
+		}
+
+		let (input, field_count) = be_u16(input)?;
+		let mut fields = Vec::with_capacity(field_count as usize);
+		let mut input = input;
+		for _ in 0..field_count {
+			let (new_input, field) = Field::parse(input, version)?;
+			input = new_input;
+			fields.push(field);
+		}
+
+		let (input, method_count) = be_u16(input)?;
+		let mut methods = Vec::with_capacity(method_count as usize);
+		let mut input = input;
+		for _ in 0..method_count {
+			let (new_input, method) = Method::parse(input, version)?;
+			input = new_input;
+			methods.push(method);
+		}
+
+		let (input, attributes) = attribute::List::parse(input, version)?;
+
 		Ok((
 			input,
 			ClassFile {
@@ -115,6 +78,12 @@ impl<'i> ClassFile<'i> {
 
 				this_class,
 				super_class,
+
+				interfaces,
+				fields,
+				methods,
+
+				attributes,
 			},
 		))
 	}
@@ -125,9 +94,11 @@ impl<'i> ClassFile<'i> {
 }
 impl Display for ClassFile<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		write!(f, "{}", self.constant_pool)?;
+
 		write!(
 			f,
-			"{} class #{} #{} for {} // ",
+			"class {} #{} #{} for {} // ",
 			self.access_flags, self.this_class, self.super_class, self.version,
 		)?;
 		self.constant_pool
@@ -139,7 +110,46 @@ impl Display for ClassFile<'_> {
 			.print(&self.constant_pool, f)?;
 		writeln!(f)?;
 
-		write!(f, "{}", self.constant_pool)?;
+		if !self.interfaces.is_empty() {
+			write!(
+				f,
+				"implements {} // ",
+				self.interfaces
+					.iter()
+					.map(|i| format!("#{}", i))
+					.collect::<Vec<_>>()
+					.join(", ")
+			)?;
+			for (i, iface) in self.interfaces.iter().enumerate() {
+				if i != 0 {
+					write!(f, ", ")?;
+				}
+				self.constant_pool
+					.get(*iface as usize)
+					.print(&self.constant_pool, f)?;
+			}
+			writeln!(f)?;
+		}
+
+		if !self.fields.is_empty() {
+			for (i, field) in self.fields.iter().enumerate() {
+				if i != 0 {
+					writeln!(f)?;
+				}
+				field.print(&self.constant_pool, f)?;
+			}
+			writeln!(f)?;
+		}
+
+		if !self.methods.is_empty() {
+			for (i, method) in self.methods.iter().enumerate() {
+				if i != 0 {
+					writeln!(f)?;
+				}
+				method.print(&self.constant_pool, f)?;
+			}
+			writeln!(f)?;
+		}
 
 		Ok(())
 	}

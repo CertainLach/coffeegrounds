@@ -1,4 +1,5 @@
 use std::{
+	borrow::Cow,
 	fmt::{self, Display, Formatter},
 	io::Write,
 	ops::Index,
@@ -369,7 +370,7 @@ impl<'i> ClassParse<'i> for Item<'i> {
 					descriptor_index,
 				})
 			)?,
-			Tag::Utf8 => do_parse!(input, length: be_u16 >> data: take!(length) >> (Utf8(JavaString(data))))?,
+			Tag::Utf8 => do_parse!(input, length: be_u16 >> data: take!(length) >> (Utf8(JavaString(Cow::Borrowed(data)))))?,
 			Tag::MethodHandle => do_parse!(
 				input,
 				reference_kind: be_u8 >>
@@ -534,11 +535,19 @@ impl Display for Item<'_> {
 			),
 			Item::Module { name_index } => write!(f, "module #{}", name_index),
 			Item::Package { name_index } => write!(f, "package #{}", name_index),
-			Item::UserNop => write!(f, "user nop"),
-			Item::Nop => write!(f, "reserved slot"),
+			Item::UserNop => write!(f, "nop"),
+			Item::Nop => write!(f, "reserved"),
 		}?;
 		Ok(())
 	}
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ReplaceError {
+	#[error("hit placeholder")]
+	HitPlaceholder,
+	#[error("no space for two slot item")]
+	NoSpaceForTwoSlotItem,
 }
 
 #[derive(Debug)]
@@ -548,16 +557,50 @@ impl<'i> List<'i> {
 		Self(vec![Item::Nop])
 	}
 
-	pub fn push(&mut self, item: Item<'i>) {
+	pub fn len(&self) -> usize {
+		self.0.len()
+	}
+	pub fn is_empty(&self) -> bool {
+		self.len() == 0
+	}
+
+	/// Pushes constantpool item into any free slot
+	pub fn push(&mut self, item: Item<'i>) -> usize {
+		if item.occupies_two_slots() {
+			for idx in 0..self.len() {
+				if match (&self[idx], self.get(idx + 1)) {
+					(Item::UserNop, Some(Item::UserNop)) => true,
+					(Item::UserNop, None) => true,
+					_ => false,
+				} {
+					self.replace(idx, item).expect("should fit");
+					return idx;
+				}
+			}
+			self.push_to_end(item)
+		} else if let Some((idx, free)) = self
+			.0
+			.iter_mut()
+			.enumerate()
+			.find(|(_, v)| **v == Item::UserNop)
+		{
+			*free = item;
+			idx
+		} else {
+			self.push_to_end(item)
+		}
+	}
+	pub fn push_to_end(&mut self, item: Item<'i>) -> usize {
 		let two_slots = item.occupies_two_slots();
 		self.0.push(item);
 		if two_slots {
 			self.0.push(Item::Nop)
 		}
+		self.0.len() - 1
 	}
-	pub fn replace(&mut self, old: usize, new: Item<'i>) {
+	pub fn replace(&mut self, old: usize, new: Item<'i>) -> Result<(), ReplaceError> {
 		if self.0[old] == Item::Nop {
-			panic!("can't put anything to placeholder")
+			return Err(ReplaceError::HitPlaceholder);
 		} else if new.occupies_two_slots() {
 			// Replaced last item
 			if self.0.len() - 1 == old {
@@ -567,12 +610,13 @@ impl<'i> List<'i> {
 			} else if self.0[old + 1] == Item::Nop {
 				// Nothing to do
 			} else {
-				panic!("no space for two-slot item")
+				return Err(ReplaceError::NoSpaceForTwoSlotItem);
 			}
 		} else if self.0.len() > old && self.0[old + 1] == Item::Nop {
 			self.0[old + 1] = Item::UserNop
 		}
 		self.0[old] = new;
+		Ok(())
 	}
 
 	pub fn get_str(&self, index: usize) -> Option<&JavaString> {
@@ -639,8 +683,9 @@ impl<'i> ClassParse<'i> for List<'i> {
 
 impl Display for List<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+		writeln!(f, "raw_constantpool {{")?;
 		for (idx, item) in self.0.iter().enumerate() {
-			write!(f, "{}. {}", idx, item)?;
+			write!(f, "\t#{}. {}", idx, item)?;
 			if item.has_comment() {
 				write!(f, " // ")?;
 				// Let item explain yourself
@@ -648,6 +693,7 @@ impl Display for List<'_> {
 			}
 			writeln!(f)?;
 		}
+		writeln!(f, "}}")?;
 		Ok(())
 	}
 }

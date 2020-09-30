@@ -1,4 +1,8 @@
-use std::{convert::TryInto, fmt::Display, str::Utf8Error};
+use std::{
+	borrow::Cow, convert::TryFrom, convert::TryInto, fmt::Display, ops::Deref, str::Utf8Error,
+};
+
+use smallvec::{smallvec, SmallVec};
 
 #[derive(Debug, thiserror::Error)]
 pub enum JavaStringError {
@@ -9,12 +13,47 @@ pub enum JavaStringError {
 }
 
 #[derive(PartialEq, Eq, Debug)]
-pub struct JavaString<'i>(pub &'i [u8]);
-impl<'s> From<&'s str> for JavaString<'s> {
-	fn from(v: &'s str) -> Self {
-		JavaString(v.as_bytes())
+pub struct JavaString<'i>(pub Cow<'i, [u8]>);
+
+impl<'i> Deref for JavaString<'i> {
+	type Target = [u8];
+
+	fn deref(&self) -> &Self::Target {
+		&self.0
 	}
 }
+
+/// This conversion is fallible because MUTF-8 have different encoding for strings
+impl<'s> TryFrom<&'s str> for JavaString<'s> {
+	type Error = JavaStringError;
+
+	fn try_from(v: &'s str) -> Result<Self, JavaStringError> {
+		if v.chars().any(|c| c == 0 as char) {
+			return Err(JavaStringError::InvalidCodepoint);
+		}
+		Ok(JavaString(Cow::Borrowed(v.as_bytes())))
+	}
+}
+impl From<String> for JavaString<'static> {
+	fn from(v: String) -> Self {
+		JavaString(Cow::Owned(
+			v.chars()
+				.flat_map(|c| {
+					let c = if c == 0 as char {
+						std::char::from_u32(0xc080).expect("valid char")
+					} else {
+						c
+					};
+					// Should never allocate, used because of len
+					let mut vec: SmallVec<[u8; 4]> = smallvec![0];
+					c.encode_utf8(&mut vec);
+					vec
+				})
+				.collect(),
+		))
+	}
+}
+
 impl TryInto<String> for &JavaString<'_> {
 	type Error = JavaStringError;
 
