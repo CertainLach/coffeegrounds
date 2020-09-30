@@ -7,7 +7,7 @@ use nom::{
 	number::streaming::{be_u16, be_u32},
 };
 
-use crate::{ClassParse, SerResult};
+use crate::{constant_pool::PrintWithCp, ClassParse, SerResult};
 
 use super::{constant_pool::List, version::Version};
 
@@ -81,12 +81,13 @@ impl Display for AccessFlags {
 
 #[derive(Debug)]
 pub struct ClassFile<'i> {
-	magic: u32,
 	version: Version,
 
 	constant_pool: List<'i>,
 	access_flags: AccessFlags,
 
+	this_class: u16,
+	super_class: u16,
 	// interfaces: Vec<Interface>,
 	// fields: Vec<Field>,
 	// methods: Vec<Method>,
@@ -95,18 +96,25 @@ pub struct ClassFile<'i> {
 impl<'i> ClassFile<'i> {
 	pub fn parse(input: &'i [u8]) -> nom::IResult<&'i [u8], Self> {
 		let (input, magic) = be_u32(input)?;
+		if magic != 0xcafebabe {
+			return Err(nom::Err::Failure((input, ErrorKind::Tag)));
+		}
 		let (input, version) = Version::parse(input)?;
 		let (input, constant_pool) = List::parse(input, version)?;
 		let (input, access_flags) = AccessFlags::parse(input, version)?;
 
+		let (input, this_class) = be_u16(input)?;
+		let (input, super_class) = be_u16(input)?;
+
 		Ok((
 			input,
 			ClassFile {
-				magic,
 				version,
 				constant_pool,
 				access_flags,
 
+				this_class,
+				super_class,
 			},
 		))
 	}
@@ -117,7 +125,20 @@ impl<'i> ClassFile<'i> {
 }
 impl Display for ClassFile<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-		writeln!(f, "class {} version {}", self.magic, self.version)?;
+		write!(
+			f,
+			"{} class #{} #{} for {} // ",
+			self.access_flags, self.this_class, self.super_class, self.version,
+		)?;
+		self.constant_pool
+			.get(self.this_class as usize)
+			.print(&self.constant_pool, f)?;
+		write!(f, " extends ")?;
+		self.constant_pool
+			.get(self.super_class as usize)
+			.print(&self.constant_pool, f)?;
+		writeln!(f)?;
+
 		write!(f, "{}", self.constant_pool)?;
 
 		Ok(())

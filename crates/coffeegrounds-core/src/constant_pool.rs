@@ -185,6 +185,7 @@ pub enum Item<'input> {
 
 pub trait PrintWithCp {
 	fn print(&self, cp: &List<'_>, f: &mut fmt::Formatter<'_>) -> fmt::Result;
+	fn has_comment(&self) -> bool;
 }
 impl<T> PrintWithCp for Option<T>
 where
@@ -194,6 +195,14 @@ where
 		match self {
 			Some(v) => v.print(cp, f),
 			None => write!(f, "!"),
+		}
+	}
+
+	fn has_comment(&self) -> bool {
+		if let Some(v) = self {
+			v.has_comment()
+		} else {
+			true
 		}
 	}
 }
@@ -294,6 +303,19 @@ impl PrintWithCp for &Item<'_> {
 			_ => {}
 		}
 		Ok(())
+	}
+
+	fn has_comment(&self) -> bool {
+		match self {
+			Item::Integer(_) => false,
+			Item::Float(_) => false,
+			Item::Long(_) => false,
+			Item::Double(_) => false,
+			Item::Utf8(_) => false,
+			Item::UserNop => false,
+			Item::Nop => false,
+			_ => true,
+		}
 	}
 }
 impl<'i> ClassParse<'i> for Item<'i> {
@@ -496,7 +518,7 @@ impl Display for Item<'_> {
 				name_index,
 				descriptor_index,
 			} => write!(f, "nameandtype #{} #{}", descriptor_index, name_index),
-			Item::Utf8(..) => write!(f, "utf8"),
+			Item::Utf8(v) => write!(f, "utf8 {}", v),
 			Item::MethodHandle {
 				reference_kind,
 				reference_index,
@@ -618,9 +640,12 @@ impl<'i> ClassParse<'i> for List<'i> {
 impl Display for List<'_> {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		for (idx, item) in self.0.iter().enumerate() {
-			write!(f, "{}. {} ", idx, item)?;
-			// Let item explain yourself
-			item.print(self, f)?;
+			write!(f, "{}. {}", idx, item)?;
+			if item.has_comment() {
+				write!(f, " // ")?;
+				// Let item explain yourself
+				item.print(self, f)?;
+			}
 			writeln!(f)?;
 		}
 		Ok(())
