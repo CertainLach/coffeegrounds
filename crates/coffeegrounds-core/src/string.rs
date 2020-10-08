@@ -12,7 +12,7 @@ pub enum JavaStringError {
 	Utf8Error(#[from] Utf8Error),
 }
 
-#[derive(PartialEq, Eq, Debug)]
+#[derive(PartialEq, Eq, Debug, Hash)]
 pub struct JavaString<'i>(pub Cow<'i, [u8]>);
 
 impl<'i> Deref for JavaString<'i> {

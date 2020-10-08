@@ -1,6 +1,8 @@
 use std::{
 	borrow::Cow,
+	collections::HashSet,
 	fmt::{self, Display, Formatter},
+	hash::Hash,
 	io::Write,
 	ops::Index,
 };
@@ -16,7 +18,7 @@ use nom::{
 };
 use num_traits::FromPrimitive;
 
-use crate::{ClassParse, SerResult};
+use crate::{float::JavaFloatWrapper, ClassParse, SerResult};
 
 use super::{string::JavaString, version::Version};
 
@@ -60,7 +62,7 @@ impl ClassParse<'_> for Tag {
 	}
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum ReferenceKind {
 	GetField,
 	GetStatic,
@@ -130,7 +132,7 @@ impl Display for ReferenceKind {
 	}
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Hash, Debug)]
 pub enum Item<'input> {
 	Class {
 		name_index: u16,
@@ -151,9 +153,9 @@ pub enum Item<'input> {
 		string_index: u16,
 	},
 	Integer(i32),
-	Float(f32),
+	Float(JavaFloatWrapper<f32>),
 	Long(i64),
-	Double(f64),
+	Double(JavaFloatWrapper<f64>),
 	NameAndType {
 		name_index: u16,
 		descriptor_index: u16,
@@ -358,9 +360,9 @@ impl<'i> ClassParse<'i> for Item<'i> {
 				string_index: be_u16 >> (Item::String { string_index })
 			)?,
 			Tag::Integer => do_parse!(input, value: be_i32 >> (Integer(value)))?,
-			Tag::Float => do_parse!(input, value: be_f32 >> (Float(value)))?,
+			Tag::Float => do_parse!(input, value: be_f32 >> (Float(JavaFloatWrapper(value))))?,
 			Tag::Long => do_parse!(input, value: be_i64 >> (Long(value)))?,
-			Tag::Double => do_parse!(input, value: be_f64 >> (Double(value)))?,
+			Tag::Double => do_parse!(input, value: be_f64 >> (Double(JavaFloatWrapper(value))))?,
 			Tag::NameAndType => do_parse!(
 				input,
 				name_index: be_u16 >>
@@ -438,13 +440,13 @@ impl<'i> ClassParse<'i> for Item<'i> {
 			Item::Integer(v) => {
 				output.write_i32::<BigEndian>(*v)?;
 			}
-			Item::Float(v) => {
+			Item::Float(JavaFloatWrapper(v)) => {
 				output.write_f32::<BigEndian>(*v)?;
 			}
 			Item::Long(v) => {
 				output.write_i64::<BigEndian>(*v)?;
 			}
-			Item::Double(v) => {
+			Item::Double(JavaFloatWrapper(v)) => {
 				output.write_f64::<BigEndian>(*v)?;
 			}
 			Item::NameAndType {
@@ -512,9 +514,9 @@ impl Display for Item<'_> {
 			),
 			Item::String { string_index } => write!(f, "string #{}", string_index),
 			Item::Integer(v) => write!(f, "int {}", v),
-			Item::Float(v) => write!(f, "float {}", v),
+			Item::Float(v) => write!(f, "float {}", v.0),
 			Item::Long(v) => write!(f, "long {}", v),
-			Item::Double(v) => write!(f, "double {}", v),
+			Item::Double(v) => write!(f, "double {}", v.0),
 			Item::NameAndType {
 				name_index,
 				descriptor_index,
@@ -629,6 +631,16 @@ impl<'i> List<'i> {
 
 	pub fn get(&self, index: usize) -> Option<&Item<'i>> {
 		self.0.get(index)
+	}
+
+	/// Ambiguous constant pool = which has multiple ways to represent same string
+	/// I.e
+	/// #1 Utf8 "Hello, world!"
+	/// #2 String #1
+	/// #3 String #2
+	pub fn is_ambiguous(&self) -> bool {
+		let mut set = HashSet::new();
+		self.0.iter().any(|i| !set.insert(i))
 	}
 }
 impl<'i> Index<usize> for List<'i> {
