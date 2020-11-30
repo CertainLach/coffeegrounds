@@ -64,13 +64,10 @@ impl Display for FieldAccessFlags {
 				Protected => "protected",
 				Static => "static",
 				Final => "final",
-				Synchronized => "synchronized",
-				Bridge => "bridge",
-				Varargs => "varargs",
-				Native => "native",
-				Abstract => "abstract",
-				Strictfp => "strictfp",
+				Volatile => "volatile",
+				Transient => "transient",
 				Synthetic => "synthetic",
+				Enum => "enum",
 			}
 		)
 	}
